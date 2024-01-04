@@ -530,9 +530,12 @@ class GaussianSplattingModel(Model):
             print("Called get_outputs with not a camera")
             return {}
         assert camera.shape[0] == 1, "Only one camera at a time"
+
         if self.training:
-            # currently relies on the branch vickie/camera-grads
-            self.camera_optimizer.apply_to_camera(camera)
+            optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)[0, ...]
+        else:
+            optimized_camera_to_world = camera.camera_to_worlds[0, ...]
+
         if self.training:
             background = torch.rand(3, device=self.device)
         else:
@@ -550,8 +553,9 @@ class GaussianSplattingModel(Model):
         camera_downscale = self._get_downscale_factor()
         camera.rescale_output_resolution(1 / camera_downscale)
         # shift the camera to center of scene looking at center
-        R = camera.camera_to_worlds[0, :3, :3]  # 3 x 3
-        T = camera.camera_to_worlds[0, :3, 3:4]  # 3 x 1
+        R = optimized_camera_to_world[:3, :3]  # 3 x 3
+        T = optimized_camera_to_world[:3, 3:4]  # 3 x 1
+
         # flip the z and y axes to align with gsplat conventions
         R_edit = torch.diag(torch.tensor([1, -1, -1], device="cuda", dtype=R.dtype))
         R = R @ R_edit
@@ -610,7 +614,7 @@ class GaussianSplattingModel(Model):
         if self.training:
             self.xys.retain_grad()
         if self.config.sh_degree > 0:
-            viewdirs = means_crop.detach() - camera.camera_to_worlds.detach()[..., :3, 3]  # (N, 3)
+            viewdirs = means_crop.detach() - optimized_camera_to_world.detach()[:3, 3]  # (N, 3)
             viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
             n = min(self.step // self.config.sh_degree_interval, self.config.sh_degree)
             rgbs = SphericalHarmonics.apply(n, viewdirs, colors_crop)
@@ -701,11 +705,17 @@ class GaussianSplattingModel(Model):
         else:
             sh_reg = torch.tensor(0.0).to(self.device)
             scale_reg = torch.tensor(0.0).to(self.device)
-        return {
+
+        loss_dict = {
             "main_loss": (1 - self.config.ssim_lambda) * Ll1 + self.config.ssim_lambda * simloss,
             "sh_reg": sh_reg,
             "scale_reg": scale_reg,
         }
+
+        if self.training:
+            self.camera_optimizer.get_loss_dict(loss_dict)
+
+        return loss_dict
 
     @torch.no_grad()
     def get_outputs_for_camera(self, camera: Cameras, obb_box: Optional[OrientedBox] = None) -> Dict[str, torch.Tensor]:
