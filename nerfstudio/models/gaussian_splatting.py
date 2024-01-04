@@ -82,27 +82,6 @@ def SH2RGB(sh):
     return sh * C0 + 0.5
 
 
-def projection_matrix(znear, zfar, fovx, fovy, device: Union[str, torch.device] = "cpu"):
-    """
-    Constructs an OpenGL-style perspective projection matrix.
-    """
-    t = znear * math.tan(0.5 * fovy)
-    b = -t
-    r = znear * math.tan(0.5 * fovx)
-    l = -r
-    n = znear
-    f = zfar
-    return torch.tensor(
-        [
-            [2 * n / (r - l), 0.0, (r + l) / (r - l), 0.0],
-            [0.0, 2 * n / (t - b), (t + b) / (t - b), 0.0],
-            [0.0, 0.0, (f + n) / (f - n), -1.0 * f * n / (f - n)],
-            [0.0, 0.0, 1.0, 0.0],
-        ],
-        device=device,
-    )
-
-
 @dataclass
 class GaussianSplattingModelConfig(ModelConfig):
     """Gaussian Splatting Model Config"""
@@ -568,11 +547,9 @@ class GaussianSplattingModel(Model):
         # calculate the FOV of the camera given fx and fy, width and height
         cx = camera.cx.item()
         cy = camera.cy.item()
-        fovx = 2 * math.atan(camera.width / (2 * camera.fx))
-        fovy = 2 * math.atan(camera.height / (2 * camera.fy))
         W, H = camera.width.item(), camera.height.item()
         self.last_size = (H, W)
-        projmat = projection_matrix(0.001, 1000, fovx, fovy, device=self.device)
+
         BLOCK_X, BLOCK_Y = 16, 16
         tile_bounds = (
             (W + BLOCK_X - 1) // BLOCK_X,
@@ -598,7 +575,6 @@ class GaussianSplattingModel(Model):
             1,
             quats_crop / quats_crop.norm(dim=-1, keepdim=True),
             viewmat.squeeze()[:3, :],
-            projmat.squeeze() @ viewmat.squeeze(),
             camera.fx.item(),
             camera.fy.item(),
             cx,
