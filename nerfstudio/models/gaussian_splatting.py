@@ -575,6 +575,7 @@ class GaussianSplattingModel(Model):
             1,
             quats_crop / quats_crop.norm(dim=-1, keepdim=True),
             viewmat.squeeze()[:3, :],
+            None, # Deprecated projmat
             camera.fx.item(),
             camera.fy.item(),
             cx,
