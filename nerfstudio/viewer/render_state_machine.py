@@ -173,19 +173,20 @@ class RenderStateMachine(threading.Thread):
             num_rays = (camera.height * camera.width).item()
             if self.viewer.control_panel.layer_depth:
                 if isinstance(self.viewer.get_model(), SplatfactoModel):
-                    # Gaussians render much faster than we can send depth images, so we do some downsampling.
-                    assert len(outputs["depth"].shape) == 3
-                    assert outputs["depth"].shape[-1] == 1
+                    if outputs["depth"] is not None:
+                        # Gaussians render much faster than we can send depth images, so we do some downsampling.
+                        assert len(outputs["depth"].shape) == 3
+                        assert outputs["depth"].shape[-1] == 1
 
-                    desired_depth_pixels = {"low_move": 128, "low_static": 128, "high": 512}[self.state] ** 2
-                    current_depth_pixels = outputs["depth"].shape[0] * outputs["depth"].shape[1]
-                    scale = min(desired_depth_pixels / current_depth_pixels, 1.0)
+                        desired_depth_pixels = {"low_move": 128, "low_static": 128, "high": 512}[self.state] ** 2
+                        current_depth_pixels = outputs["depth"].shape[0] * outputs["depth"].shape[1]
+                        scale = min(desired_depth_pixels / current_depth_pixels, 1.0)
 
-                    outputs["gl_z_buf_depth"] = F.interpolate(
-                        outputs["depth"].squeeze(dim=-1)[None, None, ...],
-                        size=(int(outputs["depth"].shape[0] * scale), int(outputs["depth"].shape[1] * scale)),
-                        mode="bilinear",
-                    )[0, 0, :, :, None]
+                        outputs["gl_z_buf_depth"] = F.interpolate(
+                            outputs["depth"].squeeze(dim=-1)[None, None, ...],
+                            size=(int(outputs["depth"].shape[0] * scale), int(outputs["depth"].shape[1] * scale)),
+                            mode="bilinear",
+                        )[0, 0, :, :, None]
                 else:
                     # Convert to z_depth if depth compositing is enabled.
                     R = camera.camera_to_worlds[0, 0:3, 0:3].T
