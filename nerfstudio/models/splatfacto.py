@@ -175,6 +175,8 @@ class SplatfactoModelConfig(ModelConfig):
     """Regularize motion blur compensation by underestimating exposure time with the factor (1.0 - this)"""
     blur_velocity_regularization: float = 0.1
     """Regularize motion blur and rolling shutter compensation by adding noise to the training velocities. Factor relative to the velocity magnitude"""
+    min_rgb_level: float = 0
+    """Minimum RGB level used for training on the scale [0, 255]. Helps to avoid persistent & expanding dark Gaussians caused by large negative color logits"""
 
 
 class SplatfactoModel(Model):
@@ -912,6 +914,8 @@ class SplatfactoModel(Model):
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
         gt_img = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
+        if self.config.min_rgb_level > 0:
+            gt_img = gt_img.clamp(min=self.config.min_rgb_level/255.0)
         pred_img = outputs["rgb"]
 
         # Set masked part of both ground-truth and rendered image to black.
