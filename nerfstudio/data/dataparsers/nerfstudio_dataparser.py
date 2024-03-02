@@ -100,6 +100,7 @@ class Nerfstudio(DataParser):
         mask_filenames = []
         depth_filenames = []
         poses = []
+        velocities = None
 
         fx_fixed = "fl_x" in meta
         fy_fixed = "fl_y" in meta
@@ -182,6 +183,16 @@ class Nerfstudio(DataParser):
                 depth_fname = self._get_fname(depth_filepath, data_dir, downsample_folder_prefix="depths_")
                 depth_filenames.append(depth_fname)
 
+            if "camera_linear_velocity" in frame:
+                assert "camera_angular_velocity" in frame
+                if velocities is None:
+                    velocities = []
+                velocities.append(frame["camera_linear_velocity"] + frame["camera_angular_velocity"])
+                assert len(velocities[-1]) == 6
+                assert len(velocities) == len(poses)
+            else:
+                assert velocities is None
+
         assert len(mask_filenames) == 0 or (len(mask_filenames) == len(image_filenames)), """
         Different number of image and mask filenames.
         You should check that mask_path is specified for every frame (or zero frames) in transforms.json.
@@ -233,6 +244,12 @@ class Nerfstudio(DataParser):
         else:
             orientation_method = self.config.orientation_method
 
+        if "auto_scale_poses_override" in meta:
+            auto_scale_poses = meta["auto_scale_poses_override"]
+            CONSOLE.log(f"[yellow] Dataset is overriding auto-scale method to {auto_scale_poses}")
+        else:
+            auto_scale_poses = self.config.auto_scale_poses
+
         poses = torch.from_numpy(np.array(poses).astype(np.float32))
         poses, transform_matrix = camera_utils.auto_orient_and_center_poses(
             poses,
@@ -242,7 +259,7 @@ class Nerfstudio(DataParser):
 
         # Scale poses
         scale_factor = 1.0
-        if self.config.auto_scale_poses:
+        if auto_scale_poses:
             scale_factor /= float(torch.max(torch.abs(poses[:, :3, 3])))
         scale_factor *= self.config.scale_factor
 
@@ -298,6 +315,13 @@ class Nerfstudio(DataParser):
         if (camera_type in [CameraType.FISHEYE, CameraType.FISHEYE624]) and (fisheye_crop_radius is not None):
             metadata["fisheye_crop_radius"] = fisheye_crop_radius
 
+        for prop in ['rolling_shutter_time', 'exposure_time']:
+            if prop in meta: metadata[prop] = meta[prop]
+
+        if velocities is not None:
+            velocities = torch.from_numpy(np.array(velocities).astype(np.float32))[idx_tensor]
+            velocities[:, :3] *= scale_factor
+
         cameras = Cameras(
             fx=fx,
             fy=fy,
@@ -308,6 +332,7 @@ class Nerfstudio(DataParser):
             width=width,
             camera_to_worlds=poses[:, :3, :4],
             camera_type=camera_type,
+            velocities=velocities,
             metadata=metadata,
         )
 

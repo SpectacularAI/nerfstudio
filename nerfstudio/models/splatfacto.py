@@ -151,6 +151,16 @@ class SplatfactoModelConfig(ModelConfig):
     """Config of the camera optimizer to use"""
     min_rgb_level: float = 0
     """Minimum RGB level used for training on the scale [0, 255]. Helps to avoid persistent & expanding dark Gaussians caused by large negative color logits"""
+    blur_samples: int = 10
+    """Number of blur samples for motion-blur compensation. Set to 0 to disable the feature. Auto-disabled without exposure time data"""
+    rolling_shutter_compensation: bool = True
+    """Enable rolling-shutter compensation if rolling shutter read-out time data is available"""
+    gamma: float = 2.2
+    """Gamma correction factor assumed in blurring"""
+    blur_regularization: float = 0.1
+    """Regularize motion blur compensation by underestimating exposure time with the factor (1.0 - this)"""
+    blur_velocity_regularization: float = 0.1
+    """Regularize motion blur and rolling shutter compensation by adding noise to the training velocities. Factor relative to the velocity magnitude"""
 
 
 class SplatfactoModel(Model):
@@ -194,12 +204,13 @@ class SplatfactoModel(Model):
             and self.seed_points[1].shape[0] > 0
         ):
             shs = torch.zeros((self.seed_points[1].shape[0], dim_sh, 3)).float().cuda()
+            rgb = (self.seed_points[1] / 255) ** self.config.gamma # convert to linear RGB
             if self.config.sh_degree > 0:
-                shs[:, 0, :3] = RGB2SH(self.seed_points[1] / 255)
+                shs[:, 0, :3] = RGB2SH(rgb)
                 shs[:, 1:, 3:] = 0.0
             else:
                 CONSOLE.log("use color only optimization with sigmoid activation")
-                shs[:, 0, :3] = torch.logit(self.seed_points[1] / 255, eps=1e-10)
+                shs[:, 0, :3] = torch.logit(rgb, eps=1e-10)
             features_dc = torch.nn.Parameter(shs[:, 0, :])
             features_rest = torch.nn.Parameter(shs[:, 1:, :])
         else:
@@ -235,9 +246,9 @@ class SplatfactoModel(Model):
         if self.config.background_color == "random":
             self.background_color = torch.tensor(
                 [0.1490, 0.1647, 0.2157]
-            )  # This color is the same as the default background color in Viser. This would only affect the background color when rendering.
+            ) * self.config.gamma # This color is the same as the default background color in Viser. This would only affect the background color when rendering.
         else:
-            self.background_color = get_color(self.config.background_color)
+            self.background_color = get_color(self.config.background_color) * self.config.gamma
 
     @property
     def colors(self):
@@ -406,7 +417,7 @@ class SplatfactoModel(Model):
 
     def set_background(self, background_color: torch.Tensor):
         assert background_color.shape == (3,)
-        self.background_color = background_color
+        self.background_color = background_color ** self.config.gamma
 
     def refinement_after(self, optimizers: Optimizers, step):
         assert step == self.step
@@ -661,7 +672,7 @@ class SplatfactoModel(Model):
             optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)[0, ...]
 
             if self.config.background_color == "random":
-                background = torch.rand(3, device=self.device)
+                background = torch.rand(3, device=self.device) ** self.config.gamma
             elif self.config.background_color == "white":
                 background = torch.ones(3, device=self.device)
             elif self.config.background_color == "black":
@@ -722,14 +733,50 @@ class SplatfactoModel(Model):
             quats_crop = self.quats
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
+
+        linear_vel = None
+        angular_vel = None
+        rolling_shutter_time = 0
+        exposure_time = 0
+        blur_samples = 1
+        if camera.metadata is not None:
+            if self.config.rolling_shutter_compensation:
+                rolling_shutter_time = camera.metadata.get('rolling_shutter_time', rolling_shutter_time)
+
+            if self.config.blur_samples > 1:
+                exposure_time = camera.metadata.get('exposure_time', exposure_time)
+                if exposure_time > 0:
+                    blur_samples = self.config.blur_samples
+                    if self.training:
+                        exposure_time *= (1.0 - self.config.blur_regularization)
+
+        if camera.velocities is None:
+            FAKE_TEST_VELOCITY = False
+            if FAKE_TEST_VELOCITY:
+                linear_vel = np.array([-1, 0, 0])
+                angular_vel = np.array([0, 1, 0])
+                rolling_shutter_time = 0.2
+                exposure_time = 0.03
+                blur_samples = 10
+        else:
+            velocities = camera.velocities[0, :]
+            linear_vel = (R_edit @ velocities[:3]).unsqueeze(0)
+            if self.config.blur_velocity_regularization > 0 and self.training:
+                linear_vel_norm = torch.linalg.vector_norm(linear_vel)
+                linear_vel += torch.randn_like(linear_vel) * linear_vel_norm * self.config.blur_velocity_regularization
+            angular_vel = (R_edit @ velocities[3:]).unsqueeze(0)
+
         BLOCK_WIDTH = 16  # this controls the tile size of rasterization, 16 is a good default
-        self.xys, depths, self.radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
+        self.xys, depths, pix_vels, self.radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
             means_crop,
             torch.exp(scales_crop),
             1,
             quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+            linear_vel,
+            angular_vel,
+            rolling_shutter_time,
+            exposure_time,
             viewmat.squeeze()[:3, :],
-            None, # Deprecated projmat
             camera.fx.item(),
             camera.fy.item(),
             cx,
@@ -776,6 +823,7 @@ class SplatfactoModel(Model):
         rgb, alpha = rasterize_gaussians(  # type: ignore
             self.xys,
             depths,
+            pix_vels,
             self.radii,
             conics,
             num_tiles_hit,  # type: ignore
@@ -784,16 +832,19 @@ class SplatfactoModel(Model):
             H,
             W,
             BLOCK_WIDTH,
+            blur_samples=blur_samples,
             background=background,
             return_alpha=True,
         )  # type: ignore
         alpha = alpha[..., None]
-        rgb = torch.clamp(rgb, max=1.0)  # type: ignore
+        # convert from linear to gamma corrected
+        rgb = torch.clamp(rgb, max=1.0) ** (1.0 / self.config.gamma)  # type: ignore
         depth_im = None
         if self.config.output_depth_during_training or not self.training:
             depth_im = rasterize_gaussians(  # type: ignore
                 self.xys,
                 depths,
+                pix_vels,
                 self.radii,
                 conics,
                 num_tiles_hit,  # type: ignore

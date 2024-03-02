@@ -99,6 +99,7 @@ class Cameras(TensorDataclass):
     distortion_params: Optional[Float[Tensor, "*num_cameras 6"]]
     camera_type: Int[Tensor, "*num_cameras 1"]
     times: Optional[Float[Tensor, "num_cameras 1"]]
+    velocities: Optional[Float[Tensor, "*num_cameras 6"]]
     metadata: Optional[Dict]
 
     def __init__(
@@ -118,12 +119,13 @@ class Cameras(TensorDataclass):
             CameraType,
         ] = CameraType.PERSPECTIVE,
         times: Optional[Float[Tensor, "num_cameras"]] = None,
+        velocities: Optional[Float[Tensor, "*batch_velocities 6"]] = None,
         metadata: Optional[Dict] = None,
     ) -> None:
         """Initializes the Cameras object.
 
         Note on Input Tensor Dimensions: All of these tensors have items of dimensions Shaped[Tensor, "3 4"]
-        (in the case of the c2w matrices), Shaped[Tensor, "6"] (in the case of distortion params), or
+        (in the case of the c2w matrices), Shaped[Tensor, "6"] (in the case of distortion params & velocities), or
         Shaped[Tensor, "1"] (in the case of the rest of the elements). The dimensions before that are
         considered the batch dimension of that tensor (batch_c2ws, batch_fxs, etc.). We will broadcast
         all the tensors to be the same batch dimension. This means you can use any combination of the
@@ -153,6 +155,7 @@ class Cameras(TensorDataclass):
         self.width = self._init_get_height_width(width, self.cx)
         self.camera_type = self._init_get_camera_type(camera_type)
         self.times = self._init_get_times(times)
+        self.velocities = velocities # @dataclass's post_init will take care of broadcasting
 
         self.metadata = metadata
 
