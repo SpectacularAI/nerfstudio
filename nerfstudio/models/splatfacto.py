@@ -832,6 +832,8 @@ class SplatfactoModel(Model):
             H,
             W,
             BLOCK_WIDTH,
+            rolling_shutter_time=rolling_shutter_time,
+            exposure_time=exposure_time,
             blur_samples=blur_samples,
             background=background,
             return_alpha=True,
