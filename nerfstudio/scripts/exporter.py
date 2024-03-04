@@ -461,7 +461,11 @@ class ExportCameraPoses(Exporter):
 
         _, pipeline, _, _ = eval_setup(self.load_config)
         assert isinstance(pipeline, VanillaPipeline)
-        train_frames, eval_frames = collect_camera_poses(pipeline)
+        camera_optimizer = None
+        if isinstance(pipeline.model, SplatfactoModel):
+            camera_optimizer = pipeline.model.camera_optimizer
+
+        train_frames, eval_frames = collect_camera_poses(pipeline, camera_optimizer)
 
         for file_name, frames in [("transforms_train.json", train_frames), ("transforms_eval.json", eval_frames)]:
             if len(frames) == 0:

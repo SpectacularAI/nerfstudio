@@ -152,20 +152,28 @@ class CameraOptimizer(nn.Module):
             raybundle.origins = raybundle.origins + correction_matrices[:, :3, 3]
             raybundle.directions = torch.bmm(correction_matrices[:, :3, :3], raybundle.directions[..., None]).squeeze()
 
-    def apply_to_camera(self, camera: Cameras) -> torch.Tensor:
+    def apply_to_camera(self, camera: Cameras, idx: Optional[int] = None) -> torch.Tensor:
         """Apply the pose correction to the world-to-camera matrix in a Camera object"""
         if self.config.mode == "off":
             return camera.camera_to_worlds
 
+        camera_idx = idx
+
         assert camera.metadata is not None, "Must provide id of camera in its metadata"
-        if "cam_idx" not in camera.metadata:
+        if "cam_idx" not in camera.metadata and camera_idx is None:
             # Evalutaion cams?
             return camera.camera_to_worlds
 
-        camera_idx = camera.metadata["cam_idx"]
+        if camera_idx is None:
+            camera_idx = camera.metadata["cam_idx"]
+
         adj = self(torch.tensor([camera_idx], dtype=torch.long, device=camera.device))  # type: ignore
-        adj = torch.cat([adj, torch.Tensor([0, 0, 0, 1])[None, None].to(adj)], dim=1)
-        return torch.bmm(camera.camera_to_worlds, adj)
+        adj = torch.cat([adj, torch.Tensor([0, 0, 0, 1])[None, None].to(adj)], dim=1).to(camera.camera_to_worlds.device)
+
+        if camera.camera_to_worlds.dim() == 2:
+            return torch.matmul(camera.camera_to_worlds, adj[0])
+        else:
+            return torch.bmm(camera.camera_to_worlds, adj)
 
     def get_loss_dict(self, loss_dict: dict) -> None:
         """Add regularization"""

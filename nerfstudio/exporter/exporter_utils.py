@@ -31,6 +31,7 @@ from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, T
 from torch import Tensor
 
 from nerfstudio.cameras.cameras import Cameras
+from nerfstudio.cameras.camera_optimizers import CameraOptimizer
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.data.datasets.base_dataset import InputDataset
 from nerfstudio.data.scene_box import OrientedBox
@@ -299,7 +300,7 @@ def render_trajectory(
     return images, depths
 
 
-def collect_camera_poses_for_dataset(dataset: Optional[InputDataset]) -> List[Dict[str, Any]]:
+def collect_camera_poses_for_dataset(dataset: Optional[InputDataset], camera_optimizer: Optional[CameraOptimizer]) -> List[Dict[str, Any]]:
     """Collects rescaled, translated and optimised camera poses for a dataset.
 
     Args:
@@ -320,7 +321,11 @@ def collect_camera_poses_for_dataset(dataset: Optional[InputDataset]) -> List[Di
     # new cameras are in cameras, whereas image paths are stored in a private member of the dataset
     for idx in range(len(cameras)):
         image_filename = image_filenames[idx]
-        transform = cameras.camera_to_worlds[idx].tolist()
+        if camera_optimizer is None:
+            transform = cameras.camera_to_worlds[idx].tolist()
+        else:
+            print('exporting optimized camera pose for camera %d' % idx)
+            transform = camera_optimizer.apply_to_camera(cameras[idx], idx).tolist()
         frames.append(
             {
                 "file_path": str(image_filename),
@@ -331,7 +336,7 @@ def collect_camera_poses_for_dataset(dataset: Optional[InputDataset]) -> List[Di
     return frames
 
 
-def collect_camera_poses(pipeline: VanillaPipeline) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def collect_camera_poses(pipeline: VanillaPipeline, camera_optimizer: Optional[CameraOptimizer]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Collects camera poses for train and eval datasets.
 
     Args:
@@ -347,7 +352,7 @@ def collect_camera_poses(pipeline: VanillaPipeline) -> Tuple[List[Dict[str, Any]
     eval_dataset = pipeline.datamanager.eval_dataset
     assert isinstance(eval_dataset, InputDataset)
 
-    train_frames = collect_camera_poses_for_dataset(train_dataset)
-    eval_frames = collect_camera_poses_for_dataset(eval_dataset)
+    train_frames = collect_camera_poses_for_dataset(train_dataset, camera_optimizer)
+    eval_frames = collect_camera_poses_for_dataset(eval_dataset, camera_optimizer)
 
     return train_frames, eval_frames
