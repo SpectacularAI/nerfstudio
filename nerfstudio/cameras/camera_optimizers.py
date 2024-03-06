@@ -158,10 +158,8 @@ class CameraOptimizer(nn.Module):
             return camera.camera_to_worlds
 
         camera_idx = idx
-
-        assert camera.metadata is not None, "Must provide id of camera in its metadata"
-        if "cam_idx" not in camera.metadata and camera_idx is None:
-            # Evalutaion cams?
+        if camera.metadata is None or "cam_idx" not in camera.metadata and camera_idx is None:
+            # Evaluation and visualization (Viser) cams
             return camera.camera_to_worlds
 
         if camera_idx is None:
