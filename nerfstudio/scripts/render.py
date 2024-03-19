@@ -71,6 +71,7 @@ def _render_trajectory_video(
     output_format: Literal["images", "video"] = "video",
     image_format: Literal["jpeg", "png"] = "jpeg",
     jpeg_quality: int = 100,
+    video_crf: Optional[int] = None,
     depth_near_plane: Optional[float] = None,
     depth_far_plane: Optional[float] = None,
     colormap_options: colormaps.ColormapOptions = colormaps.ColormapOptions(),
@@ -269,6 +270,7 @@ def _render_trajectory_video(
                                 path=output_filename,
                                 shape=(render_height, render_width),
                                 fps=fps,
+                                crf=video_crf
                             )
                         )
                     writer.add_image(render_image)
@@ -413,6 +415,8 @@ class BaseRender:
     """Image format"""
     jpeg_quality: int = 100
     """JPEG quality"""
+    video_crf: Optional[int] = None
+    """Video quality (FFmpeg CRF, lower is better)"""
     downscale_factor: float = 1.0
     """Scaling factor to apply to the camera image resolution."""
     eval_num_rays_per_chunk: Optional[int] = None
@@ -496,6 +500,7 @@ class RenderCameraPath(BaseRender):
             output_format=self.output_format,
             image_format=self.image_format,
             jpeg_quality=self.jpeg_quality,
+            video_crf=self.video_crf,
             depth_near_plane=self.depth_near_plane,
             depth_far_plane=self.depth_far_plane,
             colormap_options=self.colormap_options,
@@ -531,6 +536,7 @@ class RenderCameraPath(BaseRender):
                 output_format=self.output_format,
                 image_format=self.image_format,
                 jpeg_quality=self.jpeg_quality,
+                video_crf=self.video_crf,
                 depth_near_plane=self.depth_near_plane,
                 depth_far_plane=self.depth_far_plane,
                 colormap_options=self.colormap_options,
