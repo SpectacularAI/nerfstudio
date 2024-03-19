@@ -149,9 +149,14 @@ def get_path_from_json(camera_path: Dict[str, Any]) -> Cameras:
     c2ws = []
     fxs = []
     fys = []
+    velocities = []
     for camera in camera_path["camera_path"]:
         # pose
         c2w = torch.tensor(camera["camera_to_world"]).view(4, 4)[:3]
+        if "camera_linear_velocity" in camera:
+            assert "camera_angular_velocity" in camera
+            velocities.append(torch.tensor(camera["camera_linear_velocity"] + camera["camera_angular_velocity"]))
+
         c2ws.append(c2w)
         if camera_type in [
             CameraType.EQUIRECTANGULAR,
@@ -176,6 +181,15 @@ def get_path_from_json(camera_path: Dict[str, Any]) -> Cameras:
         times = None
 
     camera_to_worlds = torch.stack(c2ws, dim=0)
+    if len(velocities) > 0:
+        velocities = torch.stack(velocities, dim=0)
+    else:
+        velocities = None
+
+    metadata = {}
+    for prop in ['rolling_shutter_time', 'exposure_time']:
+        if prop in camera_path: metadata[prop] = camera_path[prop]
+
     fx = torch.tensor(fxs)
     fy = torch.tensor(fys)
     return Cameras(
@@ -186,4 +200,6 @@ def get_path_from_json(camera_path: Dict[str, Any]) -> Cameras:
         camera_to_worlds=camera_to_worlds,
         camera_type=camera_type,
         times=times,
+        velocities=velocities,
+        metadata=metadata,
     )

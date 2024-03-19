@@ -456,6 +456,12 @@ class RenderCameraPath(BaseRender):
         crop_data = get_crop_from_json(camera_path)
         camera_path = get_path_from_json(camera_path)
 
+        if 'exposure_time' in camera_path.metadata:
+            pipeline.model.config.blur_samples = 10
+
+        if 'rolling_shutter_time' in camera_path.metadata:
+            pipeline.model.config.rolling_shutter_compensation = True
+
         if (
             camera_path.camera_type[0] == CameraType.OMNIDIRECTIONALSTEREO_L.value
             or camera_path.camera_type[0] == CameraType.VR180_L.value
