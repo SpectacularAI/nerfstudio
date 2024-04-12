@@ -165,6 +165,10 @@ class SplatfactoModelConfig(ModelConfig):
     """
     camera_optimizer: CameraOptimizerConfig = field(default_factory=lambda: CameraOptimizerConfig(mode="off"))
     """Config of the camera optimizer to use"""
+    rolling_shutter_compensation: bool = True
+    """Enable rolling-shutter compensation if rolling shutter read-out time data is available"""
+    blur_velocity_regularization: float = 0.1
+    """Regularize motion blur and rolling shutter compensation by adding noise to the training velocities. Factor relative to the velocity magnitude"""
 
 
 class SplatfactoModel(Model):
@@ -733,12 +737,38 @@ class SplatfactoModel(Model):
             quats_crop = self.quats
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
+
+        linear_vel = None
+        angular_vel = None
+        rolling_shutter_time = 0
+        exposure_time = 0
+        if camera.metadata is not None:
+            if self.config.rolling_shutter_compensation:
+                rolling_shutter_time = camera.metadata.get('rolling_shutter_time', rolling_shutter_time)
+
+        if camera.velocities is None:
+            FAKE_TEST_VELOCITY = False
+            if FAKE_TEST_VELOCITY:
+                linear_vel = np.array([-1, 0, 0])
+                angular_vel = np.array([0, 1, 0])
+                rolling_shutter_time = 0.2
+        else:
+            velocities = camera.velocities[0, :]
+            linear_vel = (R_edit @ velocities[:3]).unsqueeze(0)
+            if self.config.blur_velocity_regularization > 0 and self.training:
+                linear_vel_norm = torch.linalg.vector_norm(linear_vel)
+                linear_vel += torch.randn_like(linear_vel) * linear_vel_norm * self.config.blur_velocity_regularization
+            angular_vel = (R_edit @ velocities[3:]).unsqueeze(0)
+
         BLOCK_WIDTH = 16  # this controls the tile size of rasterization, 16 is a good default
-        self.xys, depths, self.radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
+        self.xys, depths, pix_vels, self.radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
             means_crop,
             torch.exp(scales_crop),
             1,
             quats_crop / quats_crop.norm(dim=-1, keepdim=True),
+            linear_vel,
+            angular_vel,
+            rolling_shutter_time,
             viewmat.squeeze()[:3, :],
             camera.fx.item(),
             camera.fy.item(),
@@ -776,6 +806,7 @@ class SplatfactoModel(Model):
         rgb, alpha = rasterize_gaussians(  # type: ignore
             self.xys,
             depths,
+            pix_vels,
             self.radii,
             conics,
             num_tiles_hit,  # type: ignore
@@ -784,6 +815,7 @@ class SplatfactoModel(Model):
             H,
             W,
             BLOCK_WIDTH,
+            rolling_shutter_time=rolling_shutter_time,
             background=background,
             return_alpha=True,
         )  # type: ignore
@@ -794,6 +826,7 @@ class SplatfactoModel(Model):
             depth_im = rasterize_gaussians(  # type: ignore
                 self.xys,
                 depths,
+                pix_vels,
                 self.radii,
                 conics,
                 num_tiles_hit,  # type: ignore
