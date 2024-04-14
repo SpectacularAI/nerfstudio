@@ -33,7 +33,7 @@ from pytorch_msssim import SSIM
 from torch.nn import Parameter
 from typing_extensions import Literal
 
-from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
+from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig, CameraVelocityOptimizer, CameraVelocityOptimizerConfig
 from nerfstudio.cameras.cameras import Cameras
 from nerfstudio.data.scene_box import OrientedBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
@@ -165,16 +165,14 @@ class SplatfactoModelConfig(ModelConfig):
     """
     camera_optimizer: CameraOptimizerConfig = field(default_factory=lambda: CameraOptimizerConfig(mode="off"))
     """Config of the camera optimizer to use"""
+    camera_velocity_optimizer: CameraVelocityOptimizerConfig = field(default_factory=lambda: CameraVelocityOptimizerConfig(enabled=False))
+    """Config of the camera velocity optimizer (for motion blur and rolling shutter compensation)"""
     blur_samples: int = 10
     """Number of blur samples for motion-blur compensation. Set to 0 to disable the feature. Auto-disabled without exposure time data"""
     rolling_shutter_compensation: bool = True
     """Enable rolling-shutter compensation if rolling shutter read-out time data is available"""
     gamma: float = 2.2
     """Gamma correction factor assumed in blurring"""
-    blur_regularization: float = 0.1
-    """Regularize motion blur compensation by underestimating exposure time with the factor (1.0 - this)"""
-    blur_velocity_regularization: float = 0.1
-    """Regularize motion blur and rolling shutter compensation by adding noise to the training velocities. Factor relative to the velocity magnitude"""
     min_rgb_level: float = 0
     """Minimum RGB level used for training on the scale [0, 255]. Helps to avoid persistent & expanding dark Gaussians caused by large negative color logits"""
 
@@ -246,6 +244,10 @@ class SplatfactoModel(Model):
         )
 
         self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+            num_cameras=self.num_train_data, device="cpu"
+        )
+
+        self.camera_velocity_optimizer: CameraVelocityOptimizer = self.config.camera_velocity_optimizer.setup(
             num_cameras=self.num_train_data, device="cpu"
         )
 
@@ -646,6 +648,7 @@ class SplatfactoModel(Model):
         """
         gps = self.get_gaussian_param_groups()
         self.camera_optimizer.get_param_groups(param_groups=gps)
+        self.camera_velocity_optimizer.get_param_groups(param_groups=gps)
         return gps
 
     def _get_downscale_factor(self):
@@ -758,12 +761,8 @@ class SplatfactoModel(Model):
 
             if self.config.blur_samples > 1:
                 exposure_time = camera.metadata.get('exposure_time', exposure_time)
-                if exposure_time > 0:
-                    blur_samples = self.config.blur_samples
-                    if self.training:
-                        exposure_time *= (1.0 - self.config.blur_regularization)
 
-        if camera.velocities is None:
+        if camera.velocities is None and not self.config.camera_velocity_optimizer.enabled:
             FAKE_TEST_VELOCITY = False
             if FAKE_TEST_VELOCITY:
                 linear_vel = np.array([-1, 0, 0])
@@ -772,12 +771,22 @@ class SplatfactoModel(Model):
                 exposure_time = 0.03
                 blur_samples = 10
         else:
-            velocities = camera.velocities[0, :]
+            velocities = self.camera_velocity_optimizer.apply_to_camera_velocity(camera)[0, :]
             linear_vel = (R_edit @ velocities[:3]).unsqueeze(0)
-            if self.config.blur_velocity_regularization > 0 and self.training:
-                linear_vel_norm = torch.linalg.vector_norm(linear_vel)
-                linear_vel += torch.randn_like(linear_vel) * linear_vel_norm * self.config.blur_velocity_regularization
             angular_vel = (R_edit @ velocities[3:]).unsqueeze(0)
+
+            if camera.velocities is None:
+                if self.config.blur_samples > 1:
+                    assert not self.config.rolling_shutter_compensation
+                    exposure_time = 1.0
+                elif self.config.rolling_shutter_compensation:
+                    rolling_shutter_time = 1.0
+                    assert exposure_time == 0
+                else:
+                    assert False
+
+        if exposure_time > 0:
+            blur_samples = self.config.blur_samples
 
         BLOCK_WIDTH = 16  # this controls the tile size of rasterization, 16 is a good default
         self.xys, depths, pix_vels, self.radii, conics, comp, num_tiles_hit, cov3d = project_gaussians(  # type: ignore
@@ -903,6 +912,7 @@ class SplatfactoModel(Model):
         metrics_dict["gaussian_count"] = self.num_points
 
         self.camera_optimizer.get_metrics_dict(metrics_dict)
+        self.camera_velocity_optimizer.get_metrics_dict(metrics_dict)
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
@@ -951,6 +961,7 @@ class SplatfactoModel(Model):
         if self.training:
             # Add loss from camera optimizer
             self.camera_optimizer.get_loss_dict(loss_dict)
+            self.camera_velocity_optimizer.get_loss_dict(loss_dict)
 
         return loss_dict
 

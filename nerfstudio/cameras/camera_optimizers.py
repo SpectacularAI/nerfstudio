@@ -39,6 +39,25 @@ from nerfstudio.utils import poses as pose_utils
 
 
 @dataclass
+class CameraVelocityOptimizerConfig(InstantiateConfig):
+    """Configuration of optimization for camera velocities."""
+
+    _target: Type = field(default_factory=lambda: CameraVelocityOptimizer)
+
+    enabled: bool = False
+    """Optimize velocities"""
+
+    zero_initial_velocities: bool = False
+    """Do not use initial velocities in cameras as a starting point"""
+
+    linear_l2_penalty: float = 1e-6
+    """L2 penalty on linear velocity"""
+
+    angular_l2_penalty: float = 1e-5
+    """L2 penalty on angular velocity"""
+
+
+@dataclass
 class CameraOptimizerConfig(InstantiateConfig):
     """Configuration of optimization for camera poses."""
 
@@ -206,3 +225,74 @@ class CameraOptimizer(nn.Module):
             param_groups["camera_opt"] = camera_opt_params
         else:
             assert len(camera_opt_params) == 0
+
+
+class CameraVelocityOptimizer(nn.Module):
+    """Layer that modifies camera velocities during training."""
+
+    config: CameraVelocityOptimizerConfig
+
+    def __init__(
+        self,
+        config: CameraVelocityOptimizerConfig,
+        num_cameras: int,
+        device: Union[torch.device, str],
+        non_trainable_camera_indices: Optional[Int[Tensor, "num_non_trainable_cameras"]] = None,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        self.config = config
+        self.num_cameras = num_cameras
+        self.device = device
+        self.non_trainable_camera_indices = non_trainable_camera_indices
+
+        # Initialize learnable parameters.
+        if self.config.enabled:
+            self.velocity_adjustment = torch.nn.Parameter(torch.zeros((num_cameras, 6), device=device))
+
+    def apply_to_camera_velocity(self, camera: Cameras) -> torch.Tensor:
+        init_velocities = None
+        if self.config.zero_initial_velocities:
+            init_velocities = torch.zeros((1, 6), device=camera.camera_to_worlds.device)
+        else:
+            assert camera.velocities is not None
+            init_velocities = camera.velocities
+
+        if not self.config.enabled:
+            return init_velocities
+
+        if camera.metadata is None or "cam_idx" not in camera.metadata:
+            # Viser
+            return init_velocities
+
+        camera_idx = camera.metadata["cam_idx"]
+        #adj = self.velocity_adjustment[camera_idx, ...]
+        adj = torch.hstack([self.velocity_adjustment[camera_idx, :3], self.velocity_adjustment[camera_idx, 3:]])
+        return init_velocities + adj
+
+    def get_loss_dict(self, loss_dict: dict) -> None:
+        """Add regularization"""
+        if self.config.enabled:
+            loss_dict["camera_velocity_regularizer"] = (
+                self.velocity_adjustment[:, :3].norm(dim=-1).mean() * self.config.linear_l2_penalty
+                + self.velocity_adjustment[:, 3:].norm(dim=-1).mean() * self.config.angular_l2_penalty
+            )
+
+    def get_metrics_dict(self, metrics_dict: dict) -> None:
+        """Get camera velocity optimizer metrics"""
+        if self.config.enabled:
+            lin = self.velocity_adjustment[:, :3].detach().norm(dim=-1)
+            ang = self.velocity_adjustment[:, 3:].detach().norm(dim=-1)
+            metrics_dict["camera_opt_vel_max"] = lin.max()
+            metrics_dict["camera_opt_vel_mean"] = lin.mean()
+            metrics_dict["camera_opt_ang_vel_max"] = ang.max()
+            metrics_dict["camera_opt_ang_vel_mean"] = ang.mean()
+
+    def get_param_groups(self, param_groups: dict) -> None:
+        """Get camera optimizer parameters"""
+        vel_opt_params = list(self.parameters())
+        if self.config.enabled:
+            assert len(vel_opt_params) > 0
+            param_groups["camera_velocity_opt"] = vel_opt_params
+        else:
+            assert len(vel_opt_params) == 0
