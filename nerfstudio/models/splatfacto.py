@@ -926,7 +926,10 @@ class SplatfactoModel(Model):
         gt_rgb = self.composite_with_background(self.get_gt_img(batch["image"]), outputs["background"])
         predicted_rgb = outputs["rgb"]
 
-        combined_rgb = torch.cat([gt_rgb, predicted_rgb], dim=1)
+        try:
+            combined_rgb = torch.cat([gt_rgb, predicted_rgb], dim=1)
+        except:
+            return {}, {}
 
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
         gt_rgb = torch.moveaxis(gt_rgb, -1, 0)[None, ...]
