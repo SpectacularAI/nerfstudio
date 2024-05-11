@@ -107,8 +107,8 @@ class SplatfactoModelConfig(ModelConfig):
     """period of steps where gaussians are culled and densified"""
     resolution_schedule: int = 3000
     """training starts at 1/d resolution, every n steps this is doubled"""
-    background_color: Literal["random", "black", "white"] = "random"
-    """Whether to randomize the background color."""
+    background_color: Literal["random", "black", "white", "auto"] = "random"
+    """Whether to randomize the background color. Auto is useful for pure color backgrounds."""
     num_downscales: int = 2
     """at the beginning, resolution is 1/2^d, where d is this number"""
     cull_alpha_thresh: float = 0.1
@@ -261,7 +261,9 @@ class SplatfactoModel(Model):
         self.step = 0
 
         self.crop_box: Optional[OrientedBox] = None
-        if self.config.background_color == "random":
+        if self.config.background_color == "auto":
+            self.learnable_bg = torch.nn.Parameter(torch.zeros(3))
+        elif self.config.background_color == "random":
             self.background_color = torch.tensor(
                 [0.1490, 0.1647, 0.2157]
             ) ** self.config.gamma # This color is the same as the default background color in Viser. This would only affect the background color when rendering.
@@ -649,6 +651,9 @@ class SplatfactoModel(Model):
         gps = self.get_gaussian_param_groups()
         self.camera_optimizer.get_param_groups(param_groups=gps)
         self.camera_velocity_optimizer.get_param_groups(param_groups=gps)
+        if self.config.background_color == "auto":
+            gps["background_color"] = [self.learnable_bg]
+
         return gps
 
     def _get_downscale_factor(self):
@@ -694,6 +699,8 @@ class SplatfactoModel(Model):
         if self.training:
             if self.config.background_color == "random":
                 background = torch.rand(3, device=self.device) ** self.config.gamma
+            if self.config.background_color == "auto":
+                background = torch.sigmoid(self.learnable_bg)
             elif self.config.background_color == "white":
                 background = torch.ones(3, device=self.device)
             elif self.config.background_color == "black":
@@ -701,10 +708,13 @@ class SplatfactoModel(Model):
             else:
                 background = self.background_color.to(self.device)
         else:
-            if renderers.BACKGROUND_COLOR_OVERRIDE is not None:
-                background = renderers.BACKGROUND_COLOR_OVERRIDE.to(self.device)
+            if self.config.background_color == "auto":
+                background = torch.sigmoid(self.learnable_bg)
             else:
-                background = self.background_color.to(self.device)
+                if renderers.BACKGROUND_COLOR_OVERRIDE is not None:
+                    background = renderers.BACKGROUND_COLOR_OVERRIDE.to(self.device)
+                else:
+                    background = self.background_color.to(self.device)
 
         if self.crop_box is not None and not self.training:
             crop_ids = self.crop_box.within(self.means).squeeze()
