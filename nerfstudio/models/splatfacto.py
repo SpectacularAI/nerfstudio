@@ -695,12 +695,17 @@ class SplatfactoModel(Model):
 
         optimized_camera_to_world = self.camera_optimizer.apply_to_camera(camera)[0, ...]
 
+        assert camera.detached is None or len(camera.detached) == 1
+        is_detached = camera.detached is not None and camera.detached[0] == True
+
         # get the background color
         if self.training:
             if self.config.background_color == "random":
                 background = torch.rand(3, device=self.device) ** self.config.gamma
             if self.config.background_color == "auto":
                 background = torch.sigmoid(self.learnable_bg)
+                if is_detached:
+                    background = background.detach()
             elif self.config.background_color == "white":
                 background = torch.ones(3, device=self.device)
             elif self.config.background_color == "black":
@@ -757,6 +762,14 @@ class SplatfactoModel(Model):
             features_rest_crop = self.features_rest
             scales_crop = self.scales
             quats_crop = self.quats
+
+        if is_detached:
+            opacities_crop = opacities_crop.detach()
+            means_crop = means_crop.detach()
+            features_dc_crop = features_dc_crop.detach()
+            features_rest_crop = features_rest_crop.detach()
+            scales_crop = scales_crop.detach()
+            quats_crop = quats_crop.detach()
 
         colors_crop = torch.cat((features_dc_crop[:, None, :], features_rest_crop), dim=1)
 

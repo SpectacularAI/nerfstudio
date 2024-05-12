@@ -23,7 +23,7 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import cv2
 import torch
-from jaxtyping import Float, Int, Shaped
+from jaxtyping import Bool, Float, Int, Shaped
 from torch import Tensor
 from torch.nn import Parameter
 
@@ -100,6 +100,7 @@ class Cameras(TensorDataclass):
     camera_type: Int[Tensor, "*num_cameras 1"]
     times: Optional[Float[Tensor, "num_cameras 1"]]
     velocities: Optional[Float[Tensor, "*num_cameras 6"]]
+    detached: Optional[Bool[Tensor, "*num_cameras 1"]]
     metadata: Optional[Dict]
 
     def __init__(
@@ -120,6 +121,7 @@ class Cameras(TensorDataclass):
         ] = CameraType.PERSPECTIVE,
         times: Optional[Float[Tensor, "num_cameras"]] = None,
         velocities: Optional[Float[Tensor, "*batch_velocities 6"]] = None,
+        detached: Optional[Bool[Tensor, "*num_cameras"]] = None,
         metadata: Optional[Dict] = None,
     ) -> None:
         """Initializes the Cameras object.
@@ -156,6 +158,7 @@ class Cameras(TensorDataclass):
         self.camera_type = self._init_get_camera_type(camera_type)
         self.times = self._init_get_times(times)
         self.velocities = velocities # @dataclass's post_init will take care of broadcasting
+        self.detached = detached # @dataclass's post_init will take care of broadcasting
 
         self.metadata = metadata
 

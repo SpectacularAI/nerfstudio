@@ -376,6 +376,10 @@ class VanillaPipeline(Pipeline):
             for camera, batch in self.datamanager.fixed_indices_eval_dataloader:
                 # time this the following line
                 inner_start = time()
+                if camera.metadata is None:
+                    camera.metadata = {}
+                # fixes metrics with Splatfacto pose optimization and --optimize-eval-cameras (or --eval-mode=all) 
+                camera.metadata["cam_idx"] = idx
                 outputs = self.model.get_outputs_for_camera(camera=camera)
                 height, width = camera.height, camera.width
                 num_rays = height * width

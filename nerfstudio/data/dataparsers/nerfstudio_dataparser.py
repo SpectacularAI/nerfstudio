@@ -67,6 +67,11 @@ class NerfstudioDataParserConfig(DataParserConfig):
     Interval uses every nth frame for eval.
     All uses all the images for any split.
     """
+    optimize_eval_cameras: bool = False
+    """
+    If True, use all images for training, but eval images only optimize
+    the camera poses and velocities through detached gradients.
+    """
     train_split_fraction: float = 0.9
     """The percentage of the dataset to use for training. Only used when eval_mode is train-split-fraction."""
     eval_interval: int = 8
@@ -202,8 +207,10 @@ class Nerfstudio(DataParser):
         You should check that depth_file_path is specified for every frame (or zero frames) in transforms.json.
         """
 
+        is_detached = None
         has_split_files_spec = any(f"{split}_filenames" in meta for split in ("train", "val", "test"))
         if f"{split}_filenames" in meta:
+            assert not self.config.optimize_eval_cameras
             # Validate split first
             split_filenames = set(self._get_fname(Path(x), data_dir) for x in meta[f"{split}_filenames"])
             unmatched_filenames = split_filenames.difference(image_filenames)
@@ -231,12 +238,18 @@ class Nerfstudio(DataParser):
             else:
                 raise ValueError(f"Unknown eval mode {self.config.eval_mode}")
 
+            if self.config.optimize_eval_cameras:
+                i_train = np.hstack([i_eval, i_train]).ravel()
+
             if split == "train":
                 indices = i_train
             elif split in ["val", "test"]:
                 indices = i_eval
             else:
                 raise ValueError(f"Unknown dataparser split {split}")
+
+            if self.config.optimize_eval_cameras:
+                is_detached = torch.tensor([int(i < len(i_eval)) for i in range(len(indices))]).unsqueeze(-1)
 
         if "orientation_override" in meta:
             orientation_method = meta["orientation_override"]
@@ -333,6 +346,7 @@ class Nerfstudio(DataParser):
             camera_to_worlds=poses[:, :3, :4],
             camera_type=camera_type,
             velocities=velocities,
+            detached=is_detached,
             metadata=metadata,
         )
 
