@@ -631,16 +631,28 @@ method_configs["splatfacto"] = TrainerConfig(
             "scheduler": None,
         },
         "quats": {"optimizer": AdamOptimizerConfig(lr=0.001, eps=1e-15), "scheduler": None},
-        "camera_opt": {
-            "optimizer": AdamOptimizerConfig(lr=1e-4, eps=1e-15),
+        "camera_opt_trans": {
+            "optimizer": AdamOptimizerConfig(lr=2e-4, eps=1e-15),
             "scheduler": ExponentialDecaySchedulerConfig(
-                lr_final=5e-7, max_steps=30000, warmup_steps=1000, lr_pre_warmup=0
+                lr_final=1e-7, max_steps=30000, warmup_steps=500, lr_pre_warmup=0
             ),
         },
-        "camera_velocity_opt": {
+        "camera_opt_rot": {
+            "optimizer": AdamOptimizerConfig(lr=5e-5, eps=1e-15),
+            "scheduler": ExponentialDecaySchedulerConfig(
+                lr_final=1e-7, max_steps=30000, warmup_steps=500, lr_pre_warmup=0
+            ),
+        },
+        "camera_velocity_opt_linear": {
             "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
             "scheduler": ExponentialDecaySchedulerConfig(
                 lr_final=1e-6, max_steps=30000, warmup_steps=1000, lr_pre_warmup=0
+            ),
+        },
+        "camera_velocity_opt_angular": {
+            "optimizer": AdamOptimizerConfig(lr=2e-4, eps=1e-15),
+            "scheduler": ExponentialDecaySchedulerConfig(
+                lr_final=1e-7, max_steps=30000, warmup_steps=1000, lr_pre_warmup=0
             ),
         },
         "background_color": {

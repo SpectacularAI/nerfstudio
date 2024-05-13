@@ -66,7 +66,7 @@ class CameraOptimizerConfig(InstantiateConfig):
     mode: Literal["off", "SO3xR3", "SE3"] = "off"
     """Pose optimization strategy to use. If enabled, we recommend SO3xR3."""
 
-    trans_l2_penalty: float = 1e-2
+    trans_l2_penalty: float = 1e-4
     """L2 penalty on translation parameters."""
 
     rot_l2_penalty: float = 1e-3
@@ -126,7 +126,8 @@ class CameraOptimizer(nn.Module):
         if self.config.mode == "off":
             pass
         elif self.config.mode in ("SO3xR3", "SE3"):
-            self.pose_adjustment = torch.nn.Parameter(torch.zeros((num_cameras, 6), device=device))
+            self.trans_adjustment = torch.nn.Parameter(torch.zeros((num_cameras, 3), device=device))
+            self.rot_adjustment = torch.nn.Parameter(torch.zeros((num_cameras, 3), device=device))
         else:
             assert_never(self.config.mode)
 
@@ -147,16 +148,16 @@ class CameraOptimizer(nn.Module):
         if self.config.mode == "off":
             pass
         elif self.config.mode == "SO3xR3":
-            outputs.append(exp_map_SO3xR3(self.pose_adjustment[indices, :]))
+            outputs.append(exp_map_SO3xR3(torch.hstack([self.trans_adjustment[indices, :], self.rot_adjustment[indices, :]])))
         elif self.config.mode == "SE3":
-            outputs.append(exp_map_SE3(self.pose_adjustment[indices, :]))
+            outputs.append(exp_map_SE3(torch.hstack([self.trans_adjustment[indices, :], self.rot_adjustment[indices, :]])))
         else:
             assert_never(self.config.mode)
         # Detach non-trainable indices by setting to identity transform
         if self.non_trainable_camera_indices is not None:
-            if self.non_trainable_camera_indices.device != self.pose_adjustment.device:
-                self.non_trainable_camera_indices = self.non_trainable_camera_indices.to(self.pose_adjustment.device)
-            outputs[0][self.non_trainable_camera_indices] = torch.eye(4, device=self.pose_adjustment.device)[:3, :4]
+            if self.non_trainable_camera_indices.device != self.trans_adjustment.device:
+                self.non_trainable_camera_indices = self.non_trainable_camera_indices.to(self.trans_adjustment.device)
+            outputs[0][self.non_trainable_camera_indices] = torch.eye(4, device=self.trans_adjustment.device)[:3, :4]
 
         # Return: identity if no transforms are needed, otherwise multiply transforms together.
         if len(outputs) == 0:
@@ -199,8 +200,8 @@ class CameraOptimizer(nn.Module):
         """Add regularization"""
         if self.config.mode != "off":
             loss_dict["camera_opt_regularizer"] = (
-                self.pose_adjustment[:, :3].norm(dim=-1).mean() * self.config.trans_l2_penalty
-                + self.pose_adjustment[:, 3:].norm(dim=-1).mean() * self.config.rot_l2_penalty
+                self.trans_adjustment.norm(dim=-1).mean() * self.config.trans_l2_penalty
+                + self.rot_adjustment.norm(dim=-1).mean() * self.config.rot_l2_penalty
             )
 
     def get_correction_matrices(self):
@@ -210,8 +211,8 @@ class CameraOptimizer(nn.Module):
     def get_metrics_dict(self, metrics_dict: dict) -> None:
         """Get camera optimizer metrics"""
         if self.config.mode != "off":
-            trans = self.pose_adjustment[:, :3].detach().norm(dim=-1)
-            rot = self.pose_adjustment[:, 3:].detach().norm(dim=-1)
+            trans = self.trans_adjustment.detach().norm(dim=-1)
+            rot = self.rot_adjustment.detach().norm(dim=-1)
             metrics_dict["camera_opt_translation_max"] = trans.max()
             metrics_dict["camera_opt_translation_mean"] = trans.mean()
             metrics_dict["camera_opt_rotation_mean"] = numpy.rad2deg(rot.mean().cpu())
@@ -222,7 +223,8 @@ class CameraOptimizer(nn.Module):
         camera_opt_params = list(self.parameters())
         if self.config.mode != "off":
             assert len(camera_opt_params) > 0
-            param_groups["camera_opt"] = camera_opt_params
+            param_groups["camera_opt_trans"] = camera_opt_params[:1]
+            param_groups["camera_opt_rot"] = camera_opt_params[1:]
         else:
             assert len(camera_opt_params) == 0
 
@@ -248,7 +250,8 @@ class CameraVelocityOptimizer(nn.Module):
 
         # Initialize learnable parameters.
         if self.config.enabled:
-            self.velocity_adjustment = torch.nn.Parameter(torch.zeros((num_cameras, 6), device=device))
+            self.linear_velocity_adjustment = torch.nn.Parameter(torch.zeros((num_cameras, 3), device=device))
+            self.angular_velocity_adjustment = torch.nn.Parameter(torch.zeros((num_cameras, 3), device=device))
 
     def apply_to_camera_velocity(self, camera: Cameras) -> torch.Tensor:
         init_velocities = None
@@ -268,22 +271,22 @@ class CameraVelocityOptimizer(nn.Module):
 
         camera_idx = camera.metadata["cam_idx"]
         #adj = self.velocity_adjustment[camera_idx, ...]
-        adj = torch.hstack([self.velocity_adjustment[camera_idx, :3], self.velocity_adjustment[camera_idx, 3:]])
+        adj = torch.hstack([self.linear_velocity_adjustment[camera_idx, :], self.angular_velocity_adjustment[camera_idx, :]])
         return init_velocities + adj
 
     def get_loss_dict(self, loss_dict: dict) -> None:
         """Add regularization"""
         if self.config.enabled:
             loss_dict["camera_velocity_regularizer"] = (
-                self.velocity_adjustment[:, :3].norm(dim=-1).mean() * self.config.linear_l2_penalty
-                + self.velocity_adjustment[:, 3:].norm(dim=-1).mean() * self.config.angular_l2_penalty
+                self.linear_velocity_adjustment.norm(dim=-1).mean() * self.config.linear_l2_penalty
+                + self.angular_velocity_adjustment.norm(dim=-1).mean() * self.config.angular_l2_penalty
             )
 
     def get_metrics_dict(self, metrics_dict: dict) -> None:
         """Get camera velocity optimizer metrics"""
         if self.config.enabled:
-            lin = self.velocity_adjustment[:, :3].detach().norm(dim=-1)
-            ang = self.velocity_adjustment[:, 3:].detach().norm(dim=-1)
+            lin = self.linear_velocity_adjustment.detach().norm(dim=-1)
+            ang = self.angular_velocity_adjustment.detach().norm(dim=-1)
             metrics_dict["camera_opt_vel_max"] = lin.max()
             metrics_dict["camera_opt_vel_mean"] = lin.mean()
             metrics_dict["camera_opt_ang_vel_max"] = ang.max()
@@ -294,6 +297,7 @@ class CameraVelocityOptimizer(nn.Module):
         vel_opt_params = list(self.parameters())
         if self.config.enabled:
             assert len(vel_opt_params) > 0
-            param_groups["camera_velocity_opt"] = vel_opt_params
+            param_groups["camera_velocity_opt_linear"] = vel_opt_params[:1]
+            param_groups["camera_velocity_opt_angular"] = vel_opt_params[1:]
         else:
             assert len(vel_opt_params) == 0
