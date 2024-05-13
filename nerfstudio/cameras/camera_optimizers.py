@@ -252,7 +252,8 @@ class CameraVelocityOptimizer(nn.Module):
 
     def apply_to_camera_velocity(self, camera: Cameras) -> torch.Tensor:
         init_velocities = None
-        if self.config.zero_initial_velocities:
+        no_meta = camera.metadata is None or "cam_idx" not in camera.metadata
+        if self.config.zero_initial_velocities or no_meta:
             init_velocities = torch.zeros((1, 6), device=camera.camera_to_worlds.device)
         else:
             assert camera.velocities is not None
@@ -261,7 +262,7 @@ class CameraVelocityOptimizer(nn.Module):
         if not self.config.enabled:
             return init_velocities
 
-        if camera.metadata is None or "cam_idx" not in camera.metadata:
+        if no_meta:
             # Viser
             return init_velocities
 

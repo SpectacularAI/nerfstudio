@@ -175,6 +175,8 @@ class SplatfactoModelConfig(ModelConfig):
     """Gamma correction factor assumed in blurring"""
     min_rgb_level: float = 0
     """Minimum RGB level used for training on the scale [0, 255]. Helps to avoid persistent & expanding dark Gaussians caused by large negative color logits"""
+    optimize_eval_velocities: bool = True
+    """If True and optimize_eval_poses is also true, causes the evaluation velocities to be optimized. If false, the evaluation images are assumed to be static"""
 
 
 class SplatfactoModel(Model):
@@ -785,7 +787,7 @@ class SplatfactoModel(Model):
             if self.config.blur_samples > 1:
                 exposure_time = camera.metadata.get('exposure_time', exposure_time)
 
-        if camera.velocities is None and not self.config.camera_velocity_optimizer.enabled:
+        if camera.velocities is None and not self.config.camera_velocity_optimizer.enabled or (is_detached and not self.config.optimize_eval_velocities):
             FAKE_TEST_VELOCITY = False
             if FAKE_TEST_VELOCITY:
                 linear_vel = np.array([-1, 0, 0])
@@ -800,8 +802,9 @@ class SplatfactoModel(Model):
 
             if camera.velocities is None:
                 if self.config.blur_samples > 1:
-                    assert not self.config.rolling_shutter_compensation
                     exposure_time = 1.0
+                    # assert not self.config.rolling_shutter_compensation # TODO
+                    if self.config.rolling_shutter_compensation: exposure_time = 0.0
                 elif self.config.rolling_shutter_compensation:
                     rolling_shutter_time = 1.0
                     assert exposure_time == 0
